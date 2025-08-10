@@ -1,8 +1,8 @@
 #!/bin/sh
 set -e
 
-# Install Playwright Chromium + system deps (Leapcell recommends this)
-npx -y playwright@latest install --with-deps chromium
+# Install Chromium + OS deps during the BUILD step (not at runtime)
+npx -y playwright install --with-deps chromium
 
-# Install node modules
+# Install Node deps (use install here; if you prefer CI-style, switch to npm ci)
 npm install
