@@ -1,6 +1,6 @@
 # Headless Visitor (Leapcell)
 
-Small service that an external cron can hit every 15 minutes. It immediately returns and then runs a **headless Playwright** browser that opens a target URL and **stays on that page for 14 minutes**.
+Service that an external cron (e.g., cron-job.org) hits every 15 minutes. It immediately returns `202`, then runs a **headless Playwright** browser that opens a target URL and **stays on that page for ~14 minutes**, then exits.
 
 ## Endpoints
 - `GET /run?token=YOUR_SECRET[&url=ENCODED_URL]` – trigger a run (responds `202` immediately)
@@ -9,23 +9,20 @@ Small service that an external cron can hit every 15 minutes. It immediately ret
 
 ## Environment Variables
 - `CRON_SECRET` (required): shared secret for `/run`
-- `TARGET_URL` (optional): default URL if not supplied by query string
+- `TARGET_URL` (optional): default target if not provided via `?url=`
 - `STAY_MINUTES` (optional, default `14`)
-- `PORT` (Leapcell defaults to `8080`)
+- `LAUNCH_TIMEOUT_MS` (optional, default `0` = no timeout)
+- `PORT` (optional, default `8080`)
+- `DEBUG` (optional: `pw:browser*` to see Playwright startup logs)
 
 ## Deploy on Leapcell
-
-1) **Push this repo to GitHub** and connect it when creating a Leapcell Service (see their “Connect to GitHub” doc).  
-2) In the “Create Service” form use:
-   - **Runtime:** Node.js
-   - **Build Command:** `sh prepare_playwright_env.sh && npm install`
-   - **Start Command:** `npm run start`
-   - **Port:** `8080`  
-   (These follow Leapcell’s Playwright example.)  
-3) Add env vars: `CRON_SECRET`, optional `TARGET_URL`, optional `STAY_MINUTES`.  
-4) Deploy. You’ll get a URL like `https://your-app.leapcell.dev`.
+1. Connect this repo in Leapcell → Create Service (Node.js runtime).
+2. **Build Command**: `sh prepare_playwright_env.sh && npm install`
+   - This installs Chromium + OS deps at build time (critical for stability).
+3. **Start Command**: `npm run start`
+4. **Port**: `8080`
+5. Set env vars: `CRON_SECRET`, optional `TARGET_URL`, `STAY_MINUTES=14`, `LAUNCH_TIMEOUT_MS=0`.
+6. Deploy.
 
 ## Hook up cron-job.org (every 15 min)
-
-Create a new job in cron-job.org that `GET`s:
-
+Create a job that `GET`s:
