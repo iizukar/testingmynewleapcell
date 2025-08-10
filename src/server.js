@@ -3,18 +3,29 @@ import { chromium } from "playwright";
 
 const app = express();
 
-// ---- Config (env) ----
-// REQUIRED: shared secret to authenticate /run calls from your cron service
+/**
+ * === Config via env ===
+ * CRON_SECRET      required: shared secret for /run
+ * TARGET_URL       optional: default target if not passed as ?url=
+ * STAY_MINUTES     optional: default 14
+ * LAUNCH_TIMEOUT_MS optional: default 0 (no timeout) for stability
+ * PORT             optional: default 8080
+ * DEBUG            optional: set to 'pw:browser*' for Playwright startup logs
+ */
 const CRON_SECRET = process.env.CRON_SECRET || "";
-// OPTIONAL: default URL to visit if not provided via query param
 const DEFAULT_TARGET_URL = process.env.TARGET_URL || "";
-// Minutes to "stay" on the page
-const STAY_MINUTES = Number(process.env.STAY_MINUTES || 14);
-// Headless browser flags recommended for CI/serverless
+const STAY_MINUTES = Number(process.env.STAY_MINUTES ?? 14);
+const LAUNCH_TIMEOUT_MS = Number(process.env.LAUNCH_TIMEOUT_MS ?? 0);
+const PORT = Number(process.env.PORT || 8080);
+
+// Robust flags for containerized headless Chromium
 const BROWSER_ARGS = [
-  "--single-process",
   "--no-sandbox",
   "--disable-setuid-sandbox",
+  "--disable-dev-shm-usage",
+  "--disable-gpu",
+  "--no-zygote",
+  "--disable-software-rasterizer",
 ];
 
 let state = {
@@ -28,37 +39,42 @@ let state = {
 async function visitAndStay(url, stayMinutes) {
   const stayMs = stayMinutes * 60 * 1000;
   const started = new Date();
+  console.log(`[headless-visitor] launching browser (timeout=${LAUNCH_TIMEOUT_MS}ms) ...`);
 
   let browser;
   try {
-    // Launch headless Chromium
     browser = await chromium.launch({
       headless: true,
       args: BROWSER_ARGS,
+      timeout: LAUNCH_TIMEOUT_MS, // 0 = no timeout
     });
 
     const context = await browser.newContext({
       viewport: { width: 1280, height: 800 },
     });
+
     const page = await context.newPage();
 
-    // Go to target page; be lenient about slow sites
+    // Optional visibility into page logs
+    page.on("console", (msg) =>
+      console.log(`[page] ${msg.type()}: ${msg.text()}`)
+    );
+
+    console.log(`[headless-visitor] navigating to ${url} ...`);
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 120000 });
 
-    // Optional: small interaction to ensure the page is really "active"
-    // await page.mouse.move(200, 200);
-
-    // Stay on the page for the requested time
+    // Stay on page
+    console.log(`[headless-visitor] staying on page ~${stayMinutes} min ...`);
     await page.waitForTimeout(stayMs);
 
-    // Done
+    console.log(`[headless-visitor] done staying on page.`);
   } finally {
     if (browser) {
       await browser.close().catch(() => {});
     }
     state.lastFinishedAt = new Date();
     console.log(
-      `[headless-visitor] Stayed on ${url} for ~${stayMinutes} min (started ${started.toISOString()})`,
+      `[headless-visitor] Stayed on ${url} for ~${stayMinutes} min (started ${started.toISOString()})`
     );
   }
 }
@@ -73,6 +89,7 @@ async function startJob(url, stayMinutes) {
   state.lastError = null;
   state.lastUrl = url;
   state.lastRunAt = new Date();
+  console.log(`[headless-visitor] starting visit: ${url} for ${stayMinutes} min`);
 
   try {
     await visitAndStay(url, stayMinutes);
@@ -84,7 +101,7 @@ async function startJob(url, stayMinutes) {
   }
 }
 
-// Health endpoint for Leapcell
+// Health endpoint for platform probes
 app.get("/healthz", (_req, res) => res.status(200).send("ok"));
 
 // Human/status endpoint
@@ -103,33 +120,35 @@ app.get("/status", (_req, res) => {
  * Trigger endpoint for cron-job.org:
  *   GET /run?token=YOUR_SECRET[&url=https://example.com]
  *
- * It replies immediately (202) so cron-job.org doesn't hit its 30s timeout.
- * The headless work continues in the background for ~14 minutes.
+ * Responds immediately (202 Accepted) so the cron service doesn't time out.
+ * The long-running headless session continues in-process.
  */
 app.get("/run", async (req, res) => {
   const token = String(req.query.token || "");
   if (!CRON_SECRET || token !== CRON_SECRET) {
+    console.warn("[headless-visitor] /run unauthorized");
     return res.status(401).json({ ok: false, error: "Unauthorized" });
   }
 
   const url = String(req.query.url || DEFAULT_TARGET_URL || "");
-  if (!url) return res.status(400).json({ ok: false, error: "Missing url" });
+  if (!url) {
+    return res.status(400).json({ ok: false, error: "Missing url" });
+  }
 
-  // throttle: if a previous job is still running, don’t start a new one
   if (state.running) {
+    console.log("[headless-visitor] /run received but a job is already running");
     return res
       .status(202)
       .json({ ok: true, accepted: false, message: "already running" });
   }
 
-  // Kick off the work but respond fast
+  console.log(`[headless-visitor] /run accepted for ${url}`);
   inFlight = startJob(url, STAY_MINUTES);
   res.status(202).json({ ok: true, accepted: true, url, stayMinutes: STAY_MINUTES });
 });
 
-const port = process.env.PORT || 8080;
-app.listen(port, () => {
-  console.log(`[headless-visitor] listening on :${port}`);
+app.listen(PORT, () => {
+  console.log(`[headless-visitor] listening on :${PORT}`);
 });
 
 // Graceful shutdown
@@ -140,3 +159,8 @@ for (const sig of ["SIGTERM", "SIGINT"]) {
     process.exit(0);
   });
 }
+
+// Make sure unhandled rejections don’t bring the process down silently
+process.on("unhandledRejection", (err) => {
+  console.error("[headless-visitor] UnhandledRejection:", err);
+});
