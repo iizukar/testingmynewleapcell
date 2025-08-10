@@ -1,0 +1,12 @@
+{
+  "name": "headless-cron",
+  "version": "1.0.0",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.0.0",
+    "hono": "^3.0.0",
+    "playwright": "^1.40.0"
+  }
+}
